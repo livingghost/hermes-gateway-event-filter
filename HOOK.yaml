@@ -1,0 +1,4 @@
+name: hermes-gateway-event-filter
+description: Suppress selected Hermes gateway event messages before platform delivery.
+events:
+  - gateway:startup
