@@ -50,6 +50,8 @@ Restart the gateway after installing or changing the hook.
 
 No configuration is required. By default, the hook applies to all non-local
 gateway/chat platforms. The `cli` and `local` interfaces are excluded.
+In shared multi-agent rooms, keep `suppress_still_working_notice: true` so periodic
+gateway progress notices do not get re-ingested as ordinary chat messages.
 
 To override the defaults, add this optional block to
 `$HERMES_HOME/config.yaml`:
@@ -58,9 +60,10 @@ To override the defaults, add this optional block to
 gateway_event_filter:
   platforms: all
   suppress:
-    empty_final_warning: true
-    busy_ack: true
-    background_review: true
+    suppress_empty_final_warning: true
+    suppress_busy_ack_notice: true
+    suppress_background_review_notice: true
+    suppress_still_working_notice: true
 ```
 
 `platforms` may be `all` or a list:
@@ -72,22 +75,12 @@ gateway_event_filter:
     - telegram
 ```
 
-For migration from the old plugin, the hook also reads the legacy config block:
-
-```yaml
-plugins:
-  hermes-agent-gateway-event-filter:
-    suppress:
-      background_review: true
-```
-
-The native `gateway_event_filter` block takes precedence when both are present.
-
 | Key | Default | Behavior |
 |-----|---------|----------|
-| `empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
-| `busy_ack` | `true` | Suppresses the active-session interrupt acknowledgment. |
-| `background_review` | `true` | Suppresses memory/profile background-review delivery callbacks. |
+| `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
+| `suppress_busy_ack_notice` | `true` | Suppresses the active-session interrupt acknowledgment. |
+| `suppress_background_review_notice` | `true` | Suppresses memory/profile background-review delivery callbacks. |
+| `suppress_still_working_notice` | `true` | Suppresses the periodic `⏳ Still working...` gateway progress notice. |
 
 Tool-progress and interim assistant commentary are intentionally not handled by
 this hook in the current Hermes snapshot. Use Hermes core display settings
@@ -110,7 +103,8 @@ The hook patches these runtime targets:
 | `AIAgent.run_conversation` | Normalizes `(empty)` before gateway handling sees it. |
 | `GatewayRunner._run_agent` | Fallback normalization for gateway turns. |
 | `GatewayRunner._handle_active_session_busy_message` | Suppresses only the busy acknowledgment send inside the busy-handler path. |
-| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack and empty-final warning notices immediately before platform delivery. |
+| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack, long-running status, and empty-final warning notices immediately before platform delivery. |
+| `gateway.platforms.*Adapter.send` | Drops known busy-ack, long-running status, and empty-final warning notices for adapters that send directly without `_send_with_retry`. |
 
 When the model returns:
 

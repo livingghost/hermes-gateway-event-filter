@@ -9,6 +9,7 @@ import importlib.machinery
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 from contextvars import ContextVar
@@ -21,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 HOOK_NAME = "hermes-gateway-event-filter"
 CONFIG_KEY = "gateway_event_filter"
-LEGACY_CONFIG_KEY = "hermes_gateway_event_filter"
-LEGACY_PLUGIN_KEY = "hermes-agent-gateway-event-filter"
 _EMPTY_SENTINEL = "(empty)"
 _PATCH_ATTR = "_gateway_event_filter_wrapped"
 _ORIGINAL_ATTR = "_gateway_event_filter_original"
@@ -46,12 +45,13 @@ _BUSY_ACK_SUPPRESS_PLATFORM: ContextVar[str | None] = ContextVar(
 _DEFAULT_PLATFORMS = {"all"}
 _ALL_PLATFORM_EXCLUSIONS = {"", "cli", "local"}
 _DEFAULT_SUPPRESS = {
-    "empty_final_warning": True,
-    "busy_ack": True,
-    "background_review": True,
+    "suppress_empty_final_warning": True,
+    "suppress_busy_ack_notice": True,
+    "suppress_background_review_notice": True,
+    "suppress_still_working_notice": True,
 }
 _CALLBACK_SUPPRESS_KEYS = {
-    "background_review_callback": "background_review",
+    "background_review_callback": "suppress_background_review_notice",
 }
 _EMPTY_STATUS_MARKERS = (
     "Model returned empty after tool calls",
@@ -147,21 +147,9 @@ def _load_runtime_config() -> dict[str, Any] | None:
             logger.warning("%s: config.yaml is not a mapping; event filter disabled", HOOK_NAME)
             return None
 
-        native_config_found = False
-        for key in (CONFIG_KEY, LEGACY_CONFIG_KEY):
-            if key not in loaded:
-                continue
-            native_config_found = True
-            value = loaded.get(key)
-            if isinstance(value, dict):
-                raw_hook_config = value
-            break
-
-        plugin_config = loaded.get("plugins", {})
-        if not native_config_found and isinstance(plugin_config, dict):
-            value = plugin_config.get(LEGACY_PLUGIN_KEY)
-            if isinstance(value, dict):
-                raw_hook_config = value
+        value = loaded.get(CONFIG_KEY)
+        if isinstance(value, dict):
+            raw_hook_config = value
 
     suppress = dict(_DEFAULT_SUPPRESS)
     configured_suppress = raw_hook_config.get("suppress")
@@ -214,6 +202,13 @@ def _is_busy_ack_message(content: Any) -> bool:
     return "Interrupting current task" in str(content or "")
 
 
+def _is_still_working_notice_message(content: Any) -> bool:
+    text = str(content or "").strip()
+    return bool(
+        re.fullmatch(r"⏳ Still working\.\.\. \(\d+ min elapsed(?: — .+)?\)", text)
+    )
+
+
 def _is_empty_final_warning_message(content: Any) -> bool:
     text = str(content or "").strip()
     marker_index = text.find(_EMPTY_FINAL_WARNING_MARKER)
@@ -230,9 +225,11 @@ def _is_empty_final_warning_message(content: Any) -> bool:
 
 
 def _should_suppress_send(platform: Any, content: Any, *, busy_ack_context: bool = False) -> bool:
-    if busy_ack_context and _should_suppress(platform, "busy_ack") and _is_busy_ack_message(content):
+    if busy_ack_context and _should_suppress(platform, "suppress_busy_ack_notice") and _is_busy_ack_message(content):
         return True
-    if _should_suppress(platform, "empty_final_warning") and _is_empty_final_warning_message(content):
+    if _should_suppress(platform, "suppress_still_working_notice") and _is_still_working_notice_message(content):
+        return True
+    if _should_suppress(platform, "suppress_empty_final_warning") and _is_empty_final_warning_message(content):
         return True
     return False
 
@@ -247,7 +244,7 @@ def _successful_send_result() -> Any:
 
 
 def _normalize_empty_result(result: Any, platform: Any) -> Any:
-    if not _should_suppress(platform, "empty_final_warning"):
+    if not _should_suppress(platform, "suppress_empty_final_warning"):
         return result
     if not isinstance(result, dict) or result.get("final_response") != _EMPTY_SENTINEL:
         return result
@@ -333,7 +330,7 @@ def _patch_aiagent_module(module: Any, module_name: str = "run_agent") -> bool:
     else:
         @functools.wraps(original_emit_status)
         def wrapped_emit_status(self: Any, message: str) -> Any:
-            if _should_suppress_for_agent(self, "empty_final_warning") and _is_empty_status(message):
+            if _should_suppress_for_agent(self, "suppress_empty_final_warning") and _is_empty_status(message):
                 logger.debug(
                     "%s: suppressed empty lifecycle status for %s",
                     HOOK_NAME,
@@ -528,6 +525,16 @@ def _is_base_adapter_module_candidate(module_name: str, module: Any) -> bool:
     return path_name == "base.py" and "/gateway/platforms/" in module_file
 
 
+def _is_platform_adapter_module_candidate(module_name: str, module: Any) -> bool:
+    if module_name == "gateway.platforms.base":
+        return False
+    if ".gateway.platforms." in module_name or module_name.startswith("gateway.platforms."):
+        return True
+    module_file = _module_file_path(module)
+    path_name = _module_file_name(module)
+    return path_name.endswith(".py") and "/gateway/platforms/" in module_file and not module_file.endswith("/gateway/platforms/base.py")
+
+
 def _get_gateway_platform_from_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     source = kwargs.get("source")
     if source is None:
@@ -598,7 +605,7 @@ def _patch_gateway_runner() -> bool:
             @functools.wraps(original_busy)
             async def wrapped_busy(self: Any, event: Any, session_key: str, __original=original_busy) -> Any:
                 platform = _source_platform(getattr(event, "source", None))
-                if not _should_suppress(platform, "busy_ack"):
+                if not _should_suppress(platform, "suppress_busy_ack_notice"):
                     return await __original(self, event, session_key)
 
                 token = _BUSY_ACK_SUPPRESS_PLATFORM.set(platform)
@@ -682,6 +689,79 @@ def _patch_base_adapter() -> bool:
     return patched_classes > 0 and failed_classes == 0
 
 
+def _patch_platform_adapter_sends() -> bool:
+    base_classes: list[type] = []
+    for module_name, module in list(sys.modules.items()):
+        if not _is_base_adapter_module_candidate(str(module_name), module):
+            continue
+        adapter_cls = getattr(module, "BasePlatformAdapter", None)
+        if isinstance(adapter_cls, type):
+            base_classes.append(adapter_cls)
+
+    if not base_classes:
+        logger.warning("%s: BasePlatformAdapter class is not available for subclass send patch", HOOK_NAME)
+        return False
+
+    patched_classes = 0
+    failed_classes = 0
+    seen: set[int] = set()
+    for module_name, module in list(sys.modules.items()):
+        if not _is_platform_adapter_module_candidate(str(module_name), module):
+            continue
+        for attr_name in dir(module):
+            adapter_cls = getattr(module, attr_name, None)
+            if not isinstance(adapter_cls, type):
+                continue
+            if any(adapter_cls is base_cls for base_cls in base_classes):
+                continue
+            if not any(issubclass(adapter_cls, base_cls) for base_cls in base_classes):
+                continue
+            class_id = id(adapter_cls)
+            if class_id in seen:
+                continue
+            seen.add(class_id)
+
+            original_send = getattr(adapter_cls, "send", None)
+            if original_send is None:
+                logger.warning("%s: %s.send is not available; skipping patch", HOOK_NAME, adapter_cls.__name__)
+                failed_classes += 1
+                continue
+            if getattr(original_send, _PATCH_ATTR, False):
+                patched_classes += 1
+                continue
+            if not _has_parameters(original_send, {"content"}):
+                logger.warning("%s: %s.send signature is not supported; skipping patch", HOOK_NAME, adapter_cls.__name__)
+                failed_classes += 1
+                continue
+
+            @functools.wraps(original_send)
+            async def wrapped_send(self: Any, *args: Any, __original=original_send, **kwargs: Any) -> Any:
+                platform = _BUSY_ACK_SUPPRESS_PLATFORM.get()
+                content = kwargs.get("content")
+                if content is None and len(args) >= 2:
+                    content = args[1]
+                adapter_platform = _source_platform(getattr(self, "platform", None))
+                effective_platform = platform or adapter_platform
+                if _should_suppress_send(effective_platform, content, busy_ack_context=bool(platform)):
+                    logger.debug("%s: suppressed adapter send for %s", HOOK_NAME, effective_platform)
+                    return _successful_send_result()
+
+                result = __original(self, *args, **kwargs)
+                if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                    return await result
+                return result
+
+            setattr(wrapped_send, _PATCH_ATTR, True)
+            setattr(wrapped_send, _ORIGINAL_ATTR, original_send)
+            adapter_cls.send = wrapped_send
+            patched_classes += 1
+            logger.info("%s: patched %s.send", HOOK_NAME, adapter_cls.__name__)
+
+    if not seen:
+        logger.warning("%s: no platform adapter subclasses found; skipping send patch", HOOK_NAME)
+    return patched_classes > 0 and failed_classes == 0
+
+
 def bootstrap(*, warn_incomplete: bool = True) -> bool:
     if not _reload_config():
         return False
@@ -689,19 +769,21 @@ def bootstrap(*, warn_incomplete: bool = True) -> bool:
         patched_agent = _patch_aiagent()
         patched_gateway = _patch_gateway_runner()
         patched_base = _patch_base_adapter()
+        patched_platform_sends = _patch_platform_adapter_sends()
     agent_ready = patched_agent or _AGENT_PATCH_PENDING
     if warn_incomplete and _AGENT_PATCH_PENDING:
         logger.info("%s: AIAgent patch pending until the agent module is imported", HOOK_NAME)
-    if warn_incomplete and (not agent_ready or not patched_gateway or not patched_base):
+    if warn_incomplete and (not agent_ready or not patched_gateway or not patched_base or not patched_platform_sends):
         logger.warning(
-            "%s: patch targets incomplete: agent=%s agent_pending=%s gateway=%s base_adapter=%s",
+            "%s: patch targets incomplete: agent=%s agent_pending=%s gateway=%s base_adapter=%s platform_sends=%s",
             HOOK_NAME,
             patched_agent,
             _AGENT_PATCH_PENDING,
             patched_gateway,
             patched_base,
+            patched_platform_sends,
         )
-    return agent_ready and patched_gateway and patched_base
+    return agent_ready and patched_gateway and patched_base and patched_platform_sends
 
 
 async def handle(event_type: str, context: dict[str, Any] | None = None) -> None:
