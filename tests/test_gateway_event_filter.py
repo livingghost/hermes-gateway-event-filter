@@ -91,8 +91,8 @@ def test_agent_callbacks_and_empty_lifecycle_are_source_aware(monkeypatch):
     local_result = local_agent.run_conversation()
 
     assert ("background", "discord", ("User profile updated",)) not in seen
-    assert ("tool", "discord", ("tool.started",)) not in seen
-    assert ("interim", "discord", ("preview",)) not in seen
+    assert ("tool", "discord", ("tool.started",)) in seen
+    assert ("interim", "discord", ("preview",)) in seen
     assert ("status", "discord", "lifecycle", "ordinary lifecycle") in seen
     assert all("Model returned empty after tool calls" not in str(item) for item in seen)
     assert discord_agent.run_conversation() == {
@@ -112,15 +112,13 @@ def test_agent_callbacks_and_empty_lifecycle_are_source_aware(monkeypatch):
     assert local_result == {"final_response": "(empty)", "kept": True}
 
 
-def test_default_suppression_enables_all_event_types(monkeypatch):
+def test_default_suppression_only_covers_gateway_noise(monkeypatch):
     hook = load_hook(monkeypatch)
 
     assert hook._CONFIG["suppress"] == {
         "empty_final_warning": True,
         "busy_ack": True,
         "background_review": True,
-        "tool_progress": True,
-        "interim_assistant": True,
     }
 
 
@@ -168,8 +166,6 @@ gateway_event_filter:
     empty_final_warning: false
     busy_ack: true
     background_review: true
-    tool_progress: true
-    interim_assistant: true
 """.lstrip(),
         encoding="utf-8",
     )
@@ -181,8 +177,6 @@ gateway_event_filter:
             "empty_final_warning": False,
             "busy_ack": True,
             "background_review": True,
-            "tool_progress": True,
-            "interim_assistant": True,
         },
     }
 
@@ -195,14 +189,14 @@ plugins:
   hermes-agent-gateway-event-filter:
     platforms: discord
     suppress:
-      tool_progress: true
+      background_review: false
 """.lstrip(),
         encoding="utf-8",
     )
     hook = load_hook(monkeypatch, hermes_home=tmp_path)
 
     assert hook._CONFIG["platforms"] == {"discord"}
-    assert hook._CONFIG["suppress"]["tool_progress"] is True
+    assert hook._CONFIG["suppress"]["background_review"] is False
     assert hook._CONFIG["suppress"]["empty_final_warning"] is True
 
 
@@ -215,14 +209,14 @@ plugins:
   hermes-agent-gateway-event-filter:
     platforms: discord
     suppress:
-      tool_progress: true
+      background_review: false
 """.lstrip(),
         encoding="utf-8",
     )
     hook = load_hook(monkeypatch, hermes_home=tmp_path)
 
     assert hook._CONFIG["platforms"] == {"all"}
-    assert hook._CONFIG["suppress"]["tool_progress"] is True
+    assert hook._CONFIG["suppress"]["background_review"] is True
 
 
 def test_gateway_run_agent_normalizes_positional_source(monkeypatch):

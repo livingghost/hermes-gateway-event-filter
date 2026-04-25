@@ -49,13 +49,9 @@ _DEFAULT_SUPPRESS = {
     "empty_final_warning": True,
     "busy_ack": True,
     "background_review": True,
-    "tool_progress": True,
-    "interim_assistant": True,
 }
 _CALLBACK_SUPPRESS_KEYS = {
     "background_review_callback": "background_review",
-    "tool_progress_callback": "tool_progress",
-    "interim_assistant_callback": "interim_assistant",
 }
 _EMPTY_STATUS_MARKERS = (
     "Model returned empty after tool calls",

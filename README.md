@@ -8,6 +8,21 @@ logs but noisy in the chat timeline. Examples include empty model-output
 nudges, active-task interrupt acknowledgments, and background memory/profile
 review notices.
 
+## Compatibility
+
+This hook is currently maintained against:
+
+- Hermes Agent `v0.11.0`
+- upstream `main` commit `05d8f11085fec55106a0d2e0ed2051baeb4b108c`
+- commit date `2026-04-24`
+
+The current compatibility target is the upstream snapshot whose HEAD commit is:
+
+```text
+05d8f11085fec55106a0d2e0ed2051baeb4b108c
+fix(/model): show provider-enforced context length, not raw models.dev (#15438)
+```
+
 The hook is source-aware. It does not globally block arbitrary substrings from
 normal assistant replies. Instead it patches the dedicated runtime paths that
 emit these gateway events, with a narrow send-boundary guard for two known
@@ -46,8 +61,6 @@ gateway_event_filter:
     empty_final_warning: true
     busy_ack: true
     background_review: true
-    tool_progress: true
-    interim_assistant: true
 ```
 
 `platforms` may be `all` or a list:
@@ -65,7 +78,7 @@ For migration from the old plugin, the hook also reads the legacy config block:
 plugins:
   hermes-agent-gateway-event-filter:
     suppress:
-      tool_progress: true
+      background_review: true
 ```
 
 The native `gateway_event_filter` block takes precedence when both are present.
@@ -75,8 +88,16 @@ The native `gateway_event_filter` block takes precedence when both are present.
 | `empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
 | `busy_ack` | `true` | Suppresses the active-session interrupt acknowledgment. |
 | `background_review` | `true` | Suppresses memory/profile background-review delivery callbacks. |
-| `tool_progress` | `true` | Suppresses tool-progress callbacks. |
-| `interim_assistant` | `true` | Suppresses interim assistant preview callbacks. |
+
+Tool-progress and interim assistant commentary are intentionally not handled by
+this hook in the current Hermes snapshot. Use Hermes core display settings
+instead:
+
+```yaml
+display:
+  tool_progress: "off"
+  interim_assistant_messages: true
+```
 
 ## Behavior
 
