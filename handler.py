@@ -9,7 +9,6 @@ import importlib.machinery
 import inspect
 import logging
 import os
-import re
 import sys
 import threading
 from contextvars import ContextVar
@@ -48,7 +47,6 @@ _DEFAULT_SUPPRESS = {
     "suppress_empty_final_warning": True,
     "suppress_busy_ack_notice": True,
     "suppress_background_review_notice": True,
-    "suppress_still_working_notice": True,
 }
 _CALLBACK_SUPPRESS_KEYS = {
     "background_review_callback": "suppress_background_review_notice",
@@ -202,13 +200,6 @@ def _is_busy_ack_message(content: Any) -> bool:
     return "Interrupting current task" in str(content or "")
 
 
-def _is_still_working_notice_message(content: Any) -> bool:
-    text = str(content or "").strip()
-    return bool(
-        re.fullmatch(r"⏳ Still working\.\.\. \(\d+ min elapsed(?: — .+)?\)", text)
-    )
-
-
 def _is_empty_final_warning_message(content: Any) -> bool:
     text = str(content or "").strip()
     marker_index = text.find(_EMPTY_FINAL_WARNING_MARKER)
@@ -226,8 +217,6 @@ def _is_empty_final_warning_message(content: Any) -> bool:
 
 def _should_suppress_send(platform: Any, content: Any, *, busy_ack_context: bool = False) -> bool:
     if busy_ack_context and _should_suppress(platform, "suppress_busy_ack_notice") and _is_busy_ack_message(content):
-        return True
-    if _should_suppress(platform, "suppress_still_working_notice") and _is_still_working_notice_message(content):
         return True
     if _should_suppress(platform, "suppress_empty_final_warning") and _is_empty_final_warning_message(content):
         return True

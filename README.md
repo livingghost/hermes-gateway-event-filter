@@ -13,14 +13,14 @@ review notices.
 This hook is currently maintained against:
 
 - Hermes Agent `v0.11.0`
-- upstream `main` commit `05d8f11085fec55106a0d2e0ed2051baeb4b108c`
-- commit date `2026-04-24`
+- upstream `main` commit `d9bf09372863919a19279b28838515d4fac17c43`
+- commit date `2026-04-29`
 
 The current compatibility target is the upstream snapshot whose HEAD commit is:
 
 ```text
-05d8f11085fec55106a0d2e0ed2051baeb4b108c
-fix(/model): show provider-enforced context length, not raw models.dev (#15438)
+d9bf09372863919a19279b28838515d4fac17c43
+Merge pull request #17638 from NousResearch/bb/tui-details-persist
 ```
 
 The hook is source-aware. It does not globally block arbitrary substrings from
@@ -50,8 +50,6 @@ Restart the gateway after installing or changing the hook.
 
 No configuration is required. By default, the hook applies to all non-local
 gateway/chat platforms. The `cli` and `local` interfaces are excluded.
-In shared multi-agent rooms, keep `suppress_still_working_notice: true` so periodic
-gateway progress notices do not get re-ingested as ordinary chat messages.
 
 To override the defaults, add this optional block to
 `$HERMES_HOME/config.yaml`:
@@ -63,7 +61,6 @@ gateway_event_filter:
     suppress_empty_final_warning: true
     suppress_busy_ack_notice: true
     suppress_background_review_notice: true
-    suppress_still_working_notice: true
 ```
 
 `platforms` may be `all` or a list:
@@ -80,7 +77,6 @@ gateway_event_filter:
 | `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
 | `suppress_busy_ack_notice` | `true` | Suppresses the active-session interrupt acknowledgment. |
 | `suppress_background_review_notice` | `true` | Suppresses memory/profile background-review delivery callbacks. |
-| `suppress_still_working_notice` | `true` | Suppresses the periodic `⏳ Still working...` gateway progress notice. |
 
 Tool-progress and interim assistant commentary are intentionally not handled by
 this hook in the current Hermes snapshot. Use Hermes core display settings
@@ -90,6 +86,13 @@ instead:
 display:
   tool_progress: "off"
   interim_assistant_messages: true
+```
+
+Periodic long-running progress notices are controlled by Hermes core:
+
+```yaml
+agent:
+  gateway_notify_interval: 0
 ```
 
 ## Behavior
@@ -103,8 +106,8 @@ The hook patches these runtime targets:
 | `AIAgent.run_conversation` | Normalizes `(empty)` before gateway handling sees it. |
 | `GatewayRunner._run_agent` | Fallback normalization for gateway turns. |
 | `GatewayRunner._handle_active_session_busy_message` | Suppresses only the busy acknowledgment send inside the busy-handler path. |
-| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack, long-running status, and empty-final warning notices immediately before platform delivery. |
-| `gateway.platforms.*Adapter.send` | Drops known busy-ack, long-running status, and empty-final warning notices for adapters that send directly without `_send_with_retry`. |
+| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack and empty-final warning notices immediately before platform delivery. |
+| `gateway.platforms.*Adapter.send` | Drops known busy-ack and empty-final warning notices for adapters that send directly without `_send_with_retry`. |
 
 When the model returns:
 
@@ -134,6 +137,7 @@ does not suppress:
 - provider errors
 - tool exceptions
 - gateway drain/restart notices
+- periodic long-running progress notices
 - context-window or compression warnings unrelated to empty model output
 
 Those should remain visible because they may require action.

@@ -119,7 +119,6 @@ def test_default_suppression_only_covers_gateway_noise(monkeypatch):
         "suppress_empty_final_warning": True,
         "suppress_busy_ack_notice": True,
         "suppress_background_review_notice": True,
-        "suppress_still_working_notice": True,
     }
 
 
@@ -167,7 +166,6 @@ gateway_event_filter:
     suppress_empty_final_warning: false
     suppress_busy_ack_notice: true
     suppress_background_review_notice: true
-    suppress_still_working_notice: false
 """.lstrip(),
         encoding="utf-8",
     )
@@ -179,7 +177,6 @@ gateway_event_filter:
             "suppress_empty_final_warning": False,
             "suppress_busy_ack_notice": True,
             "suppress_background_review_notice": True,
-            "suppress_still_working_notice": False,
         },
     }
 
@@ -293,90 +290,6 @@ def test_busy_ack_suppresses_only_busy_ack_send(monkeypatch):
             "Please do not hide this."
         ),
         "ordinary final response",
-    ]
-
-
-def test_still_working_notice_suppresses_only_gateway_notice(monkeypatch):
-    hook = load_hook(monkeypatch)
-    sent = []
-
-    class SendResult:
-        def __init__(self, success=True):
-            self.success = success
-
-    class BasePlatformAdapter:
-        async def _send_with_retry(self, content, **kwargs):
-            sent.append(content)
-            return types.SimpleNamespace(success=True)
-
-    class Adapter(BasePlatformAdapter):
-        platform = "discord"
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gateway.platforms.base",
-        types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter, SendResult=SendResult),
-    )
-    assert hook._patch_base_adapter() is True
-
-    async def run_sends():
-        adapter = Adapter()
-        await adapter._send_with_retry(
-            content="⏳ Still working... (2 min elapsed)"
-        )
-        await adapter._send_with_retry(
-            content="⏳ Still working... (2 min elapsed — iteration 0/180, starting new turn (cached))"
-        )
-        await adapter._send_with_retry(
-            content="⏳ Working through the issue now. Next I will inspect the hook."
-        )
-        await adapter._send_with_retry(
-            content="ordinary final response"
-        )
-
-    asyncio.run(run_sends())
-
-    assert sent == [
-        "⏳ Working through the issue now. Next I will inspect the hook.",
-        "ordinary final response",
-    ]
-
-
-def test_platform_adapter_send_suppresses_still_working_notice(monkeypatch):
-    hook = load_hook(monkeypatch)
-    sent = []
-
-    class BasePlatformAdapter:
-        platform = "discord"
-
-    class DiscordAdapter(BasePlatformAdapter):
-        async def send(self, chat_id, content, reply_to=None, metadata=None):
-            sent.append((chat_id, content, reply_to, metadata))
-            return types.SimpleNamespace(success=True)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gateway.platforms.base",
-        types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter, SendResult=lambda success=True: types.SimpleNamespace(success=success)),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "gateway.platforms.discord",
-        types.SimpleNamespace(DiscordAdapter=DiscordAdapter),
-    )
-
-    assert hook._patch_platform_adapter_sends() is True
-
-    async def run_sends():
-        adapter = DiscordAdapter()
-        await adapter.send("chat", "⏳ Still working... (2 min elapsed)")
-        await adapter.send("chat", "⏳ Still working... (2 min elapsed — iteration 0/180, initializing)")
-        await adapter.send("chat", "ordinary final response")
-
-    asyncio.run(run_sends())
-
-    assert sent == [
-        ("chat", "ordinary final response", None, None),
     ]
 
 
