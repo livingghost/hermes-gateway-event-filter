@@ -332,6 +332,45 @@ def test_import_hook_patches_late_run_agent_import(monkeypatch, tmp_path):
     }
 
 
+def test_import_hook_uses_pathfinder_without_chaining_meta_finders(monkeypatch, tmp_path):
+    hook = load_hook(monkeypatch)
+    run_agent_path = tmp_path / "run_agent.py"
+    run_agent_path.write_text(
+        textwrap.dedent(
+            """
+            class AIAgent:
+                def __init__(self, platform="discord"):
+                    self.platform = platform
+                    self.background_review_callback = lambda *args: None
+
+                def _emit_status(self, message):
+                    return message
+
+                def run_conversation(self):
+                    return {"final_response": "(empty)"}
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    class SentinelFinder:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname != "run_agent":
+                return None
+            raise AssertionError("AIAgent import hook must not delegate to other meta path finders")
+
+    assert hook._patch_aiagent() is False
+    original_meta_path = list(sys.meta_path)
+    try:
+        sys.meta_path.insert(1, SentinelFinder())
+        imported = importlib.import_module("run_agent")
+    finally:
+        sys.meta_path[:] = original_meta_path
+
+    assert getattr(imported.AIAgent.run_conversation, hook._PATCH_ATTR, False) is True
+
+
 def test_aiagent_auto_discovery_patches_non_run_agent_module(monkeypatch):
     hook = load_hook(monkeypatch)
     seen = []

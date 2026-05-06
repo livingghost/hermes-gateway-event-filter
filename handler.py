@@ -390,7 +390,7 @@ class _RunAgentPatchFinder(importlib.abc.MetaPathFinder):
         if fullname not in _AIAGENT_IMPORT_MODULES:
             return None
 
-        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
         if spec is None or spec.loader is None:
             return spec
         if not getattr(spec.loader, _IMPORT_LOADER_ATTR, False):
