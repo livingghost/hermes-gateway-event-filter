@@ -119,6 +119,7 @@ def test_default_suppression_only_covers_gateway_noise(monkeypatch):
         "suppress_empty_final_warning": True,
         "suppress_busy_ack_notice": True,
         "suppress_background_review_notice": True,
+        "suppress_inactivity_timeout_notice": True,
     }
 
 
@@ -166,6 +167,7 @@ gateway_event_filter:
     suppress_empty_final_warning: false
     suppress_busy_ack_notice: true
     suppress_background_review_notice: true
+    suppress_inactivity_timeout_notice: false
 """.lstrip(),
         encoding="utf-8",
     )
@@ -177,8 +179,10 @@ gateway_event_filter:
             "suppress_empty_final_warning": False,
             "suppress_busy_ack_notice": True,
             "suppress_background_review_notice": True,
+            "suppress_inactivity_timeout_notice": False,
         },
     }
+
 
 def test_gateway_run_agent_normalizes_positional_source(monkeypatch):
     hook = load_hook(monkeypatch)
@@ -203,6 +207,139 @@ def test_gateway_run_agent_normalizes_positional_source(monkeypatch):
         "session_id": "s1",
         "gateway_event_filter_suppressed": ["empty_final_warning"],
     }
+
+
+def test_base_adapter_suppresses_inactivity_notices_for_any_duration(monkeypatch):
+    hook = load_hook(monkeypatch)
+    sent = []
+
+    class SendResult:
+        def __init__(self, success=True):
+            self.success = success
+
+    class BasePlatformAdapter:
+        platform = "discord"
+
+        async def _send_with_retry(self, chat_id, content, **kwargs):
+            sent.append(content)
+            return types.SimpleNamespace(success=True)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.platforms.base",
+        types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter, SendResult=SendResult),
+    )
+    assert hook._patch_base_adapter() is True
+
+    async def send_messages():
+        adapter = BasePlatformAdapter()
+        await adapter._send_with_retry(
+            "chat",
+            "⚠️ No activity for 7 min. If the agent does not respond soon, it will "
+            "be timed out in 23 min. You can continue waiting or use /reset.",
+        )
+        await adapter._send_with_retry(
+            "chat",
+            "⏱️ Agent inactive for 120 min — no tool calls or API responses.\n"
+            "Last activity: tool completed: example (7200s ago, iteration 1/180). "
+            "The agent may have been waiting on an API response.\n"
+            "To increase the limit, set agent.gateway_timeout in config.yaml "
+            "(value in seconds, 0 = no limit) and restart the gateway.\n"
+            "Try again, or use /reset to start fresh.",
+        )
+        await adapter._send_with_retry(
+            "chat",
+            "Ordinary reply quoting: ⏱️ Agent inactive for 120 min — no tool calls "
+            "or API responses. Do not suppress this.",
+        )
+        await adapter._send_with_retry(
+            "chat",
+            "ordinary final response",
+        )
+
+    asyncio.run(send_messages())
+
+    assert sent == [
+        (
+            "Ordinary reply quoting: ⏱️ Agent inactive for 120 min — no tool calls "
+            "or API responses. Do not suppress this."
+        ),
+        "ordinary final response",
+    ]
+
+
+def test_direct_platform_send_suppresses_inactivity_warning(monkeypatch):
+    hook = load_hook(monkeypatch)
+    sent = []
+
+    class BasePlatformAdapter:
+        pass
+
+    class Adapter(BasePlatformAdapter):
+        platform = "discord"
+
+        async def send(self, chat_id, content, **kwargs):
+            sent.append(content)
+            return types.SimpleNamespace(success=True)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.platforms.base",
+        types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter),
+    )
+    monkeypatch.setitem(sys.modules, "gateway.platforms.discord", types.SimpleNamespace(Adapter=Adapter))
+    assert hook._patch_platform_adapter_sends() is True
+
+    asyncio.run(
+        Adapter().send(
+            "chat",
+            "⚠️ No activity for 2 min. If the agent does not respond soon, it will "
+            "be timed out in 8 min. You can continue waiting or use /reset.",
+        )
+    )
+
+    assert sent == []
+
+
+def test_inactivity_notice_allows_when_suppression_disabled(monkeypatch):
+    hook = load_hook(monkeypatch)
+    hook._CONFIG["suppress"]["suppress_inactivity_timeout_notice"] = False
+    sent = []
+
+    class BasePlatformAdapter:
+        platform = "discord"
+
+        async def _send_with_retry(self, chat_id, content, **kwargs):
+            sent.append(content)
+            return types.SimpleNamespace(success=True)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.platforms.base",
+        types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter),
+    )
+    assert hook._patch_base_adapter() is True
+
+    asyncio.run(
+        BasePlatformAdapter()._send_with_retry(
+            "chat",
+            "⏱️ Agent inactive for 45 min — no tool calls or API responses.\n"
+            "Last activity: initializing (2700s ago, iteration 0/180). "
+            "The agent may have been waiting on an API response.\n"
+            "To increase the limit, set agent.gateway_timeout in config.yaml "
+            "(value in seconds, 0 = no limit) and restart the gateway.\n"
+            "Try again, or use /reset to start fresh.",
+        )
+    )
+
+    assert sent == [
+        "⏱️ Agent inactive for 45 min — no tool calls or API responses.\n"
+        "Last activity: initializing (2700s ago, iteration 0/180). "
+        "The agent may have been waiting on an API response.\n"
+        "To increase the limit, set agent.gateway_timeout in config.yaml "
+        "(value in seconds, 0 = no limit) and restart the gateway.\n"
+        "Try again, or use /reset to start fresh."
+    ]
 
 
 def test_busy_ack_suppresses_only_busy_ack_send(monkeypatch):

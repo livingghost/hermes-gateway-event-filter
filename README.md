@@ -6,7 +6,9 @@ messages before they are delivered to chat platforms.
 This is intended for shared rooms where gateway lifecycle notices are useful in
 logs but noisy in the chat timeline. Examples include empty model-output
 nudges, active-task interrupt acknowledgments, and background memory/profile
-review notices.
+review notices. It also suppresses the gateway inactivity watchdog warning and
+timeout notices such as "No activity for ... min" and "Agent inactive for ...
+min" regardless of the configured minute value.
 
 ## Compatibility
 
@@ -61,6 +63,7 @@ gateway_event_filter:
     suppress_empty_final_warning: true
     suppress_busy_ack_notice: true
     suppress_background_review_notice: true
+    suppress_inactivity_timeout_notice: true
 ```
 
 `platforms` may be `all` or a list:
@@ -77,6 +80,7 @@ gateway_event_filter:
 | `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
 | `suppress_busy_ack_notice` | `true` | Suppresses the active-session interrupt acknowledgment. |
 | `suppress_background_review_notice` | `true` | Suppresses memory/profile background-review delivery callbacks. |
+| `suppress_inactivity_timeout_notice` | `true` | Suppresses gateway inactivity watchdog warning and timeout notices for any minute value. |
 
 Tool-progress and interim assistant commentary are intentionally not handled by
 this hook in the current Hermes snapshot. Use Hermes core display settings
@@ -106,8 +110,8 @@ The hook patches these runtime targets:
 | `AIAgent.run_conversation` | Normalizes `(empty)` before gateway handling sees it. |
 | `GatewayRunner._run_agent` | Fallback normalization for gateway turns. |
 | `GatewayRunner._handle_active_session_busy_message` | Suppresses only the busy acknowledgment send inside the busy-handler path. |
-| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack and empty-final warning notices immediately before platform delivery. |
-| `gateway.platforms.*Adapter.send` | Drops known busy-ack and empty-final warning notices for adapters that send directly without `_send_with_retry`. |
+| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack, empty-final, and inactivity watchdog notices immediately before platform delivery. |
+| `gateway.platforms.*Adapter.send` | Drops known busy-ack, empty-final, and inactivity watchdog notices for adapters that send directly without `_send_with_retry`. |
 
 When the model returns:
 
