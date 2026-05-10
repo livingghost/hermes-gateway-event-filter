@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 import threading
-from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable
@@ -36,16 +35,11 @@ _AIAGENT_IMPORT_MODULES = {
     "hermes.agent.run",
     "hermes.agent.run_agent",
 }
-_BUSY_ACK_SUPPRESS_PLATFORM: ContextVar[str | None] = ContextVar(
-    "gateway_event_filter_busy_ack_suppress_platform",
-    default=None,
-)
 
 _DEFAULT_PLATFORMS = {"all"}
 _ALL_PLATFORM_EXCLUSIONS = {"", "cli", "local"}
 _DEFAULT_SUPPRESS = {
     "suppress_empty_final_warning": True,
-    "suppress_busy_ack_notice": True,
     "suppress_background_review_notice": True,
     "suppress_inactivity_timeout_notice": True,
 }
@@ -211,10 +205,6 @@ def _is_empty_status(message: Any) -> bool:
     return any(marker in text for marker in _EMPTY_STATUS_MARKERS)
 
 
-def _is_busy_ack_message(content: Any) -> bool:
-    return "Interrupting current task" in str(content or "")
-
-
 def _is_empty_final_warning_message(content: Any) -> bool:
     text = str(content or "").strip()
     marker_index = text.find(_EMPTY_FINAL_WARNING_MARKER)
@@ -257,9 +247,7 @@ def _is_inactivity_timeout_notice(content: Any) -> bool:
     return False
 
 
-def _should_suppress_send(platform: Any, content: Any, *, busy_ack_context: bool = False) -> bool:
-    if busy_ack_context and _should_suppress(platform, "suppress_busy_ack_notice") and _is_busy_ack_message(content):
-        return True
+def _should_suppress_send(platform: Any, content: Any) -> bool:
     if _should_suppress(platform, "suppress_empty_final_warning") and _is_empty_final_warning_message(content):
         return True
     if _should_suppress(platform, "suppress_inactivity_timeout_notice") and _is_inactivity_timeout_notice(content):
@@ -594,7 +582,6 @@ def _patch_gateway_runner() -> bool:
         seen.add(class_id)
 
         patched_run_agent = False
-        patched_busy = False
         failed = False
 
         original_run_agent = getattr(runner_cls, "_run_agent", None)
@@ -619,41 +606,7 @@ def _patch_gateway_runner() -> bool:
             patched_run_agent = True
             logger.info("%s: patched GatewayRunner._run_agent", HOOK_NAME)
 
-        original_busy = getattr(runner_cls, "_handle_active_session_busy_message", None)
-        if original_busy is None:
-            logger.warning(
-                "%s: GatewayRunner._handle_active_session_busy_message is not available; skipping patch",
-                HOOK_NAME,
-            )
-            failed = True
-        elif getattr(original_busy, _PATCH_ATTR, False):
-            patched_busy = True
-        elif not _has_parameters(original_busy, {"event", "session_key"}):
-            logger.warning(
-                "%s: GatewayRunner._handle_active_session_busy_message signature is not supported; skipping patch",
-                HOOK_NAME,
-            )
-            failed = True
-        else:
-            @functools.wraps(original_busy)
-            async def wrapped_busy(self: Any, event: Any, session_key: str, __original=original_busy) -> Any:
-                platform = _source_platform(getattr(event, "source", None))
-                if not _should_suppress(platform, "suppress_busy_ack_notice"):
-                    return await __original(self, event, session_key)
-
-                token = _BUSY_ACK_SUPPRESS_PLATFORM.set(platform)
-                try:
-                    return await __original(self, event, session_key)
-                finally:
-                    _BUSY_ACK_SUPPRESS_PLATFORM.reset(token)
-
-            setattr(wrapped_busy, _PATCH_ATTR, True)
-            setattr(wrapped_busy, _ORIGINAL_ATTR, original_busy)
-            runner_cls._handle_active_session_busy_message = wrapped_busy
-            patched_busy = True
-            logger.info("%s: patched GatewayRunner._handle_active_session_busy_message", HOOK_NAME)
-
-        if patched_run_agent and patched_busy and not failed:
+        if patched_run_agent and not failed:
             patched_classes += 1
         else:
             failed_classes += 1
@@ -696,13 +649,11 @@ def _patch_base_adapter() -> bool:
 
         @functools.wraps(original_send)
         async def wrapped_send(self: Any, *args: Any, __original=original_send, **kwargs: Any) -> Any:
-            platform = _BUSY_ACK_SUPPRESS_PLATFORM.get()
             content = kwargs.get("content")
             if content is None and len(args) >= 2:
                 content = args[1]
-            adapter_platform = _source_platform(getattr(self, "platform", None))
-            effective_platform = platform or adapter_platform
-            if _should_suppress_send(effective_platform, content, busy_ack_context=bool(platform)):
+            effective_platform = _source_platform(getattr(self, "platform", None))
+            if _should_suppress_send(effective_platform, content):
                 logger.debug("%s: suppressed gateway send for %s", HOOK_NAME, effective_platform)
                 return _successful_send_result()
 
@@ -769,13 +720,11 @@ def _patch_platform_adapter_sends() -> bool:
 
             @functools.wraps(original_send)
             async def wrapped_send(self: Any, *args: Any, __original=original_send, **kwargs: Any) -> Any:
-                platform = _BUSY_ACK_SUPPRESS_PLATFORM.get()
                 content = kwargs.get("content")
                 if content is None and len(args) >= 2:
                     content = args[1]
-                adapter_platform = _source_platform(getattr(self, "platform", None))
-                effective_platform = platform or adapter_platform
-                if _should_suppress_send(effective_platform, content, busy_ack_context=bool(platform)):
+                effective_platform = _source_platform(getattr(self, "platform", None))
+                if _should_suppress_send(effective_platform, content):
                     logger.debug("%s: suppressed adapter send for %s", HOOK_NAME, effective_platform)
                     return _successful_send_result()
 

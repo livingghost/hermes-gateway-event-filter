@@ -117,7 +117,6 @@ def test_default_suppression_only_covers_gateway_noise(monkeypatch):
 
     assert hook._CONFIG["suppress"] == {
         "suppress_empty_final_warning": True,
-        "suppress_busy_ack_notice": True,
         "suppress_background_review_notice": True,
         "suppress_inactivity_timeout_notice": True,
     }
@@ -165,7 +164,6 @@ gateway_event_filter:
     - discord
   suppress:
     suppress_empty_final_warning: false
-    suppress_busy_ack_notice: true
     suppress_background_review_notice: true
     suppress_inactivity_timeout_notice: false
 """.lstrip(),
@@ -177,7 +175,6 @@ gateway_event_filter:
         "platforms": {"discord"},
         "suppress": {
             "suppress_empty_final_warning": False,
-            "suppress_busy_ack_notice": True,
             "suppress_background_review_notice": True,
             "suppress_inactivity_timeout_notice": False,
         },
@@ -193,9 +190,6 @@ def test_gateway_run_agent_normalizes_positional_source(monkeypatch):
     class GatewayRunner:
         async def _run_agent(self, message, context_prompt, history, source, session_id):
             return {"final_response": "(empty)", "session_id": session_id}
-
-        async def _handle_active_session_busy_message(self, event, session_key):
-            return True
 
     monkeypatch.setitem(sys.modules, "gateway.run", types.SimpleNamespace(GatewayRunner=GatewayRunner))
     assert hook._patch_gateway_runner() is True
@@ -342,85 +336,52 @@ def test_inactivity_notice_allows_when_suppression_disabled(monkeypatch):
     ]
 
 
-def test_busy_ack_suppresses_only_busy_ack_send(monkeypatch):
+def test_busy_ack_is_not_hook_managed(monkeypatch):
     hook = load_hook(monkeypatch)
     sent = []
-
-    class Source:
-        platform = "discord"
-        chat_id = "chat"
-        thread_id = None
-
-    class Event:
-        source = Source()
-        message_id = "message"
 
     class SendResult:
         def __init__(self, success=True):
             self.success = success
 
     class BasePlatformAdapter:
+        platform = "discord"
+
         async def _send_with_retry(self, content, **kwargs):
             sent.append(content)
             return types.SimpleNamespace(success=True)
-
-    class Adapter(BasePlatformAdapter):
-        platform = "discord"
-
-    class GatewayRunner:
-        def __init__(self):
-            self.adapters = {"discord": Adapter()}
-
-        async def _run_agent(self, source=None):
-            return {"final_response": "ok"}
-
-        async def _handle_active_session_busy_message(self, event, session_key):
-            adapter = self.adapters[event.source.platform]
-            await adapter._send_with_retry(content="Interrupting current task. I will respond shortly.")
-            await adapter._send_with_retry(content="ordinary busy-handler message")
-            return True
 
     monkeypatch.setitem(
         sys.modules,
         "gateway.platforms.base",
         types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter, SendResult=SendResult),
     )
-    monkeypatch.setitem(sys.modules, "gateway.run", types.SimpleNamespace(GatewayRunner=GatewayRunner))
     assert hook._patch_base_adapter() is True
-    assert hook._patch_gateway_runner() is True
 
-    async def run_busy_events():
-        runner = GatewayRunner()
-        first, second = await asyncio.gather(
-            runner._handle_active_session_busy_message(Event(), "session-1"),
-            runner._handle_active_session_busy_message(Event(), "session-2"),
-        )
-        await runner.adapters["discord"]._send_with_retry(
+    async def send_messages():
+        adapter = BasePlatformAdapter()
+        await adapter._send_with_retry(
             content="Interrupting current task outside the busy handler."
         )
-        await runner.adapters["discord"]._send_with_retry(
+        await adapter._send_with_retry(
             content=(
                 "Ordinary reply quoting: The model returned no response after processing tool results. "
                 "Please do not hide this."
             )
         )
-        await runner.adapters["discord"]._send_with_retry(
+        await adapter._send_with_retry(
             content=(
                 "\u26a0\ufe0f The model returned no response after processing tool results. "
                 "This can happen with some models \u2014 try again or rephrase your question."
             )
         )
-        await runner.adapters["discord"]._send_with_retry(
+        await adapter._send_with_retry(
             content="ordinary final response"
         )
-        return first, second
 
-    result = asyncio.run(run_busy_events())
+    asyncio.run(send_messages())
 
-    assert result == (True, True)
     assert sent == [
-        "ordinary busy-handler message",
-        "ordinary busy-handler message",
         "Interrupting current task outside the busy handler.",
         (
             "Ordinary reply quoting: The model returned no response after processing tool results. "
@@ -658,9 +619,6 @@ def test_startup_fallback_patches_gateway_and_adapter(monkeypatch):
         async def _run_agent(self, source=None):
             return {"final_response": "(empty)"}
 
-        async def _handle_active_session_busy_message(self, event, session_key):
-            return True
-
     monkeypatch.setitem(sys.modules, "gateway.platforms.base", types.SimpleNamespace(BasePlatformAdapter=BasePlatformAdapter))
     monkeypatch.setitem(sys.modules, "gateway.run", types.SimpleNamespace(GatewayRunner=GatewayRunner))
 
@@ -677,9 +635,6 @@ def test_gateway_runner_auto_discovery_ignores_unrelated_class(monkeypatch):
         async def _run_agent(self, source=None):
             return {"final_response": "(empty)"}
 
-        async def _handle_active_session_busy_message(self, event, session_key):
-            return True
-
     monkeypatch.setitem(sys.modules, "unrelated.gateway_runner", types.SimpleNamespace(GatewayRunner=GatewayRunner))
 
     assert hook._patch_gateway_runner() is False
@@ -692,9 +647,6 @@ def test_gateway_runner_main_module_requires_gateway_run_file(monkeypatch, tmp_p
     class GatewayRunner:
         async def _run_agent(self, source=None):
             return {"final_response": "(empty)"}
-
-        async def _handle_active_session_busy_message(self, event, session_key):
-            return True
 
     module = types.ModuleType("__main__")
     module.__file__ = str(tmp_path / "run.py")
@@ -711,9 +663,6 @@ def test_gateway_runner_main_gateway_run_file_is_candidate(monkeypatch, tmp_path
     class GatewayRunner:
         async def _run_agent(self, source=None):
             return {"final_response": "(empty)"}
-
-        async def _handle_active_session_busy_message(self, event, session_key):
-            return True
 
     module = types.ModuleType("__main__")
     module.__file__ = str(tmp_path / "gateway" / "run.py")
@@ -825,7 +774,7 @@ def test_base_adapter_wrapper_supports_sync_send(monkeypatch):
     assert result.content == "ordinary final response"
 
 
-def test_gateway_runner_patch_requires_both_targets(monkeypatch, caplog):
+def test_gateway_runner_patch_requires_run_agent_only(monkeypatch, caplog):
     hook = load_hook(monkeypatch)
 
     class GatewayRunner:
@@ -835,9 +784,10 @@ def test_gateway_runner_patch_requires_both_targets(monkeypatch, caplog):
     monkeypatch.setitem(sys.modules, "gateway.run", types.SimpleNamespace(GatewayRunner=GatewayRunner))
 
     with caplog.at_level(logging.WARNING):
-        assert hook._patch_gateway_runner() is False
+        assert hook._patch_gateway_runner() is True
 
-    assert "_handle_active_session_busy_message is not available" in caplog.text
+    assert not caplog.records
+    assert getattr(GatewayRunner._run_agent, hook._PATCH_ATTR, False) is True
 
 
 def test_aiagent_patch_requires_all_targets(monkeypatch, caplog):

@@ -5,24 +5,25 @@ messages before they are delivered to chat platforms.
 
 This is intended for shared rooms where gateway lifecycle notices are useful in
 logs but noisy in the chat timeline. Examples include empty model-output
-nudges, active-task interrupt acknowledgments, and background memory/profile
-review notices. It also suppresses the gateway inactivity watchdog warning and
-timeout notices such as "No activity for ... min" and "Agent inactive for ...
-min" regardless of the configured minute value.
+nudges and background memory/profile review notices. It also suppresses the
+gateway inactivity watchdog warning and timeout notices such as "No activity
+for ... min" and "Agent inactive for ... min" regardless of the configured
+minute value. Active-session interrupt acknowledgments are handled by Hermes
+core via `display.busy_ack_enabled`.
 
 ## Compatibility
 
 This hook is currently maintained against:
 
 - Hermes Agent `v0.11.0`
-- upstream `main` commit `d9bf09372863919a19279b28838515d4fac17c43`
-- commit date `2026-04-29`
+- upstream `main` commit `e5af1dd6337b3db4eaf16b330f403e08f057a16d`
+- commit date `2026-05-09`
 
 The current compatibility target is the upstream snapshot whose HEAD commit is:
 
 ```text
-d9bf09372863919a19279b28838515d4fac17c43
-Merge pull request #17638 from NousResearch/bb/tui-details-persist
+e5af1dd6337b3db4eaf16b330f403e08f057a16d
+fix(review): tell background reviewer not to capture transient env failures as skills (#23004)
 ```
 
 The hook is source-aware. It does not globally block arbitrary substrings from
@@ -61,7 +62,6 @@ gateway_event_filter:
   platforms: all
   suppress:
     suppress_empty_final_warning: true
-    suppress_busy_ack_notice: true
     suppress_background_review_notice: true
     suppress_inactivity_timeout_notice: true
 ```
@@ -78,7 +78,6 @@ gateway_event_filter:
 | Key | Default | Behavior |
 |-----|---------|----------|
 | `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
-| `suppress_busy_ack_notice` | `true` | Suppresses the active-session interrupt acknowledgment. |
 | `suppress_background_review_notice` | `true` | Suppresses memory/profile background-review delivery callbacks. |
 | `suppress_inactivity_timeout_notice` | `true` | Suppresses gateway inactivity watchdog warning and timeout notices for any minute value. |
 
@@ -90,6 +89,7 @@ instead:
 display:
   tool_progress: "off"
   interim_assistant_messages: true
+  busy_ack_enabled: false
 ```
 
 Periodic long-running progress notices are controlled by Hermes core:
@@ -109,9 +109,8 @@ The hook patches these runtime targets:
 | `AIAgent._emit_status` | Suppresses only known empty-response lifecycle statuses. |
 | `AIAgent.run_conversation` | Normalizes `(empty)` before gateway handling sees it. |
 | `GatewayRunner._run_agent` | Fallback normalization for gateway turns. |
-| `GatewayRunner._handle_active_session_busy_message` | Suppresses only the busy acknowledgment send inside the busy-handler path. |
-| `BasePlatformAdapter._send_with_retry` | Drops known busy-ack, empty-final, and inactivity watchdog notices immediately before platform delivery. |
-| `gateway.platforms.*Adapter.send` | Drops known busy-ack, empty-final, and inactivity watchdog notices for adapters that send directly without `_send_with_retry`. |
+| `BasePlatformAdapter._send_with_retry` | Drops known empty-final and inactivity watchdog notices immediately before platform delivery. |
+| `gateway.platforms.*Adapter.send` | Drops known empty-final and inactivity watchdog notices for adapters that send directly without `_send_with_retry`. |
 
 When the model returns:
 
@@ -141,6 +140,7 @@ does not suppress:
 - provider errors
 - tool exceptions
 - gateway drain/restart notices
+- active-session interrupt acknowledgments
 - periodic long-running progress notices
 - context-window or compression warnings unrelated to empty model output
 
@@ -164,11 +164,10 @@ Those should remain visible because they may require action.
 
 This hook intentionally avoids Hermes core changes, so it patches internal
 gateway functions at runtime. If Hermes renames or changes the signatures of
-`AIAgent`, `GatewayRunner._run_agent`,
-`GatewayRunner._handle_active_session_busy_message`, or
-`BasePlatformAdapter._send_with_retry`, the hook logs a warning and skips the
-unsupported patch. First-class Hermes hooks for status events and pre-send
-message cancellation would be more stable if upstream adds them later.
+`AIAgent`, `GatewayRunner._run_agent`, or `BasePlatformAdapter._send_with_retry`,
+the hook logs a warning and skips the unsupported patch. First-class Hermes
+hooks for status events and pre-send message cancellation would be more stable
+if upstream adds them later.
 
 The hook also auto-discovers loaded Hermes agent and gateway modules that expose
 `AIAgent`, `GatewayRunner`, or `BasePlatformAdapter` classes. Discovery is
