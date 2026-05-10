@@ -62,6 +62,8 @@ _EMPTY_FINAL_WARNING_ACTION_MARKERS = (
     "try again or",
     "rephrase your question",
 )
+_EMPTY_COMPLETED_WARNING_MARKER = "Processing completed but no response was generated."
+_EMPTY_COMPLETED_WARNING_DETAIL = "try sending your message again"
 _INACTIVITY_TIMEOUT_NOTICE_PREFIXES = (
     "⚠️ No activity for ",
     "No activity for ",
@@ -207,6 +209,13 @@ def _is_empty_status(message: Any) -> bool:
 
 def _is_empty_final_warning_message(content: Any) -> bool:
     text = str(content or "").strip()
+    if (
+        text.startswith(f"\u26a0\ufe0f {_EMPTY_COMPLETED_WARNING_MARKER}")
+        and _EMPTY_COMPLETED_WARNING_DETAIL in text
+        and len(text) <= 180
+    ):
+        return True
+
     marker_index = text.find(_EMPTY_FINAL_WARNING_MARKER)
     if marker_index < 0 or marker_index > 4:
         return False

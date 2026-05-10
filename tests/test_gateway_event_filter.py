@@ -376,6 +376,12 @@ def test_busy_ack_is_not_hook_managed(monkeypatch):
             )
         )
         await adapter._send_with_retry(
+            content=(
+                "\u26a0\ufe0f Processing completed but no response was generated. "
+                "This may be a transient error \u2014 try sending your message again."
+            )
+        )
+        await adapter._send_with_retry(
             content="ordinary final response"
         )
 

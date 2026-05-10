@@ -8,8 +8,11 @@ logs but noisy in the chat timeline. Examples include empty model-output
 nudges and background memory/profile review notices. It also suppresses the
 gateway inactivity watchdog warning and timeout notices such as "No activity
 for ... min" and "Agent inactive for ... min" regardless of the configured
-minute value. Active-session interrupt acknowledgments are handled by Hermes
-core via `display.busy_ack_enabled`.
+minute value. Empty final-response warnings include both the older "model
+returned no response after processing tool results" wording and the newer
+"Processing completed but no response was generated" wording. Active-session
+interrupt acknowledgments are handled by Hermes core via
+`display.busy_ack_enabled`.
 
 ## Compatibility
 
@@ -77,7 +80,7 @@ gateway_event_filter:
 
 | Key | Default | Behavior |
 |-----|---------|----------|
-| `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses and normalizes the internal `(empty)` final-response sentinel to `""`. |
+| `suppress_empty_final_warning` | `true` | Suppresses empty-output lifecycle statuses, final no-response warnings, and normalizes the internal `(empty)` final-response sentinel to `""`. |
 | `suppress_background_review_notice` | `true` | Suppresses memory/profile background-review delivery callbacks. |
 | `suppress_inactivity_timeout_notice` | `true` | Suppresses gateway inactivity watchdog warning and timeout notices for any minute value. |
 
